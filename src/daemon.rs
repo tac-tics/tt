@@ -8,6 +8,8 @@ use log::{info, warn, error};
 use lazy_static::lazy_static;
 use serde::{Serialize, Deserialize};
 
+pub mod message;
+
 const IPC_DIR: &'static str = "/home/tac-tics/projects/tt/ipc";
 
 #[derive(Default, Serialize, Deserialize)]
@@ -89,26 +91,8 @@ fn server_loop() {
 }
 
 fn service_connection(mut connection: LocalSocketStream) -> anyhow::Result<()> {
-    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-    {
-        info!("Sending state");
-        let tt = TERMTEXT.lock().unwrap();
-        connection.write_u64::<LittleEndian>(tt.data.len().try_into()?)?;
-        connection.write(tt.data.as_bytes())?;
-        connection.flush()?;
-        info!("State sent");
-    }
-    let mut buffer: Vec<u8> = vec![0; 4096];
-    info!("Reading data");
-    {
-        let size: usize = connection.read_u64::<LittleEndian>()?.try_into()?;
-        connection.read(&mut buffer[..size])?;
-        info!("Read data: {:?}", String::from_utf8_lossy(&buffer[..size]));
-        info!("Updating state");
-        let mut tt = TERMTEXT.lock().unwrap();
-        info!("Got the lock");
-        tt.data = String::from_utf8_lossy(&buffer[..size]).to_string();
-        info!("Updating state: {:?}", &tt.data);
-    }
+    use message::ReadClientMessage;
+    let message = connection.read_message()?;
+    info!("{:?}", &message);
     Ok(())
 }
