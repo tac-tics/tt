@@ -6,9 +6,9 @@ use std::io::{BufReader, BufWriter};
 const IPC_DIR: &'static str = "/home/tac-tics/projects/tt/ipc";
 
 fn main() {
+    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     // let pid_file = &format!("{IPC_DIR}/tt.pid");
-    //let args: Vec<String> = std::env::args().collect();
-    //let cmd = &args[1];
+    let args: Vec<String> = std::env::args().collect();
 
     let name = format!("{IPC_DIR}/tt.sock");
     let sock_path = std::path::Path::new(&name);
@@ -18,15 +18,15 @@ fn main() {
     }
 
     let mut conn = LocalSocketStream::connect(sock_path).unwrap();
-    {
-        let writer = std::pin::Pin::new(&mut conn).get_mut();
-        writer.write_all(b"Hello, world").unwrap();
-        writer.flush().unwrap();
-    }
 
-    /*
-    let mut buffer: Vec<u8> = Vec::with_capacity(4096);
-    conn.read(&mut buffer).unwrap();
-    println!("{:?}", String::from_utf8_lossy(&buffer));
-    */
+    let mut buffer = vec![0; 4096];
+    println!("Reading...");
+    let size: usize = conn.read_u64::<LittleEndian>().unwrap().try_into().unwrap();
+    conn.read(&mut buffer[..size]).unwrap();
+    println!("Read");
+    println!("{:?}", String::from_utf8_lossy(&buffer[..size]));
+
+    let s = &args.get(1).cloned().unwrap_or_default();
+    conn.write_u64::<LittleEndian>(s.len().try_into().unwrap()).unwrap();
+    conn.write(s.as_bytes()).unwrap();
 }
