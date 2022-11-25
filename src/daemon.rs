@@ -4,7 +4,7 @@ use signal_hook::{consts::SIGTERM, iterator::Signals};
 use std::io::{Write, Read};
 use simplelog::*;
 use anyhow;
-use log::{info, warn, error};
+use log::{info, warn, error, debug};
 use lazy_static::lazy_static;
 use serde::{Serialize, Deserialize};
 
@@ -45,9 +45,9 @@ fn main() {
 
 fn setup_logging() {
     WriteLogger::init(
-        LevelFilter::Info,
+        LevelFilter::Debug,
         Config::default(),
-        std::fs::File::create(format!("{IPC_DIR}/tt.log")).unwrap(),
+        std::fs::File::create(format!("{IPC_DIR}/tt-daemon.log")).unwrap(),
     ).unwrap();
 }
 
@@ -90,9 +90,45 @@ fn server_loop() {
     }
 }
 
-fn service_connection(mut connection: LocalSocketStream) -> anyhow::Result<()> {
-    use message::ReadClientMessage;
-    let message = connection.read_message()?;
-    info!("{:?}", &message);
+#[derive(Clone)]
+struct Connection {
+    connection: Arc<Mutex<LocalSocketStream>>,
+}
+
+impl Connection {
+    fn make(connection: LocalSocketStream) -> Self {
+        let connection = Arc::new(Mutex::new(connection));
+        Connection { connection }
+    }
+
+    fn send(&mut self, message: message::ServerMessage) -> std::io::Result<()> {
+        let mut conn = self.connection.lock().unwrap();
+        use message::WriteServerMessage;
+        debug!("Sending message: {:?}", message);
+        conn.write_message(message)
+    }
+
+    fn receive(&mut self) -> std::io::Result<message::ClientMessage> {
+        let mut conn = self.connection.lock().unwrap();
+        use message::ReadClientMessage;
+        let message = conn.read_message()?;
+        debug!("Received message: {:?}", &message);
+        Ok(message)
+    }
+}
+
+fn service_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
+    let mut connection = Connection::make(connection);
+    connection.send(message::ServerMessage::Update((0, 0), 'H'))?;
+    connection.send(message::ServerMessage::Update((1, 0), 'i'))?;
+    connection.send(message::ServerMessage::Update((2, 0), '!'))?;
+    loop {
+        let message = connection.receive()?;
+        info!("{:?}", &message);
+        match &message {
+            message::ClientMessage::Disconnect => break,
+            _ => info!("{:?}", &message),
+        }
+    }
     Ok(())
 }

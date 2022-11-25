@@ -35,10 +35,7 @@ impl<T> WriteServerMessage for T where T: Write {}
 pub trait WriteClientMessage: Write {
     fn write_message(&mut self, message: ClientMessage) -> std::io::Result<()> {
         let json_data = serde_json::to_string(&message)?;
-        println!("{}", &json_data);
-
         let json_data_len: u64 = json_data.len().try_into().unwrap();
-        println!("{}", &json_data_len);
         self.write_u64::<LittleEndian>(json_data_len)?;
         self.write(json_data.as_bytes())?;
         Ok(())
@@ -71,6 +68,7 @@ pub trait ReadServerMessage: Read {
     fn read_message(&mut self) -> std::io::Result<ServerMessage> {
         let json_data_len: usize = self.read_u64::<LittleEndian>()?.try_into().unwrap();
         let mut message_buf = vec![0u8; json_data_len];
+        self.read(&mut message_buf[..json_data_len])?;
         let message: ServerMessage = serde_json::from_slice(&mut message_buf)?;
         Ok(message)
     }
