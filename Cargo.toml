@@ -1,0 +1,24 @@
+[package]
+name = "tt"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.66"
+fork = "0.1.20"
+fs4 = "0.6.2"
+interprocess = "1.2.1"
+log = "0.4.17"
+signal-hook = "0.3.14"
+simplelog = "0.12.0"
+sysinfo = "0.26.8"
+termion = "2.0.1"
+
+
+[[bin]]
+name = "tt"
+path = "src/main.rs"
+
+[[bin]]
+name = "tt-daemon"
+path = "src/daemon.rs"
