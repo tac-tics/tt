@@ -10,15 +10,32 @@ use lazy_static::lazy_static;
 use serde::{Serialize, Deserialize};
 use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
 
 pub mod message;
 use message::{ClientMessage, ServerMessage, Size, Key};
 
 const IPC_DIR: &'static str = "/home/tac-tics/projects/tt/ipc";
 
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Clone, Copy)]
+pub enum BufferMode {
+    Normal,
+    Insert,
+    Command,
+}
+
+impl Default for BufferMode {
+    fn default() -> Self {
+        BufferMode::Normal
+    }
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct TermTextState {
+    pub path: Option<PathBuf>,
+    pub command: Option<String>,
     pub data: String,
+    pub mode: BufferMode,
 }
 
 lazy_static! {
@@ -140,6 +157,7 @@ enum ServerEvent {
     ClientMessageReceived(message::ClientMessage),
     OpenFile(String),
     SaveFile(String),
+    IssueCommand(String),
 }
 
 fn client_message_received_thread(
@@ -162,6 +180,11 @@ fn get_termtext_data() -> String {
     termtext.data.clone()
 }
 
+fn get_termtext_mode() -> BufferMode {
+    let termtext = TERMTEXT.lock().unwrap();
+    termtext.mode
+}
+
 fn send_update(connection: &mut Connection, size: Size) -> anyhow::Result<()> {
     let pos = (0, 0);
     let mut cursor_pos = pos;
@@ -169,8 +192,6 @@ fn send_update(connection: &mut Connection, size: Size) -> anyhow::Result<()> {
     let mut lines = Vec::new();
 
     let data = get_termtext_data();
-    info!("Trying to send {data}");
-
     let mut line = String::new();
 
     for ch in data.chars() {
@@ -191,6 +212,19 @@ fn send_update(connection: &mut Connection, size: Size) -> anyhow::Result<()> {
     lines.push(line);
 
     connection.send(ServerMessage::Update(pos, size, lines))?;
+
+    let status_pos = (0, size.1 - 1 as u16);
+    let status_size = (size.0, 1);
+    let mut status_line = "tt: ".to_string();
+    {
+        let termtext = TERMTEXT.lock().unwrap();
+        status_line.push_str(&format!("{:?}", termtext.mode));
+        if let Some(command) = &termtext.command {
+            status_line.push_str(&format!(" {}", command));
+        }
+    }
+    connection.send(ServerMessage::Update(status_pos, status_size, vec![status_line]))?;
+
     connection.send(ServerMessage::Cursor(cursor_pos))?;
     Ok(())
 }
@@ -225,14 +259,49 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
                     },
                     ClientMessage::Disconnect => break 'serve_loop,
                     ClientMessage::SendInput(key) => {
-                        if *key == Key::Backspace {
-                            let mut termtext = TERMTEXT.lock().unwrap();
-                            termtext.data.pop();
-                        } else if let Key::Char(c) = key {
-                            let mut termtext = TERMTEXT.lock().unwrap();
-                            termtext.data.push(*c);
-                        } else if let Key::Ctrl('s') = key {
-                            sender.send(ServerEvent::SaveFile(format!("{IPC_DIR}/hello.txt")))?;
+                        match (get_termtext_mode(), key) {
+                            (BufferMode::Normal, Key::Char('i')) => {
+                                let mut termtext = TERMTEXT.lock().unwrap();
+                                termtext.mode = BufferMode::Insert;
+                            },
+                            (BufferMode::Normal, Key::Char(':')) => {
+                                let mut termtext = TERMTEXT.lock().unwrap();
+                                termtext.mode = BufferMode::Command;
+                                termtext.command = Some(String::new());
+                            },
+                            (_, Key::Esc) => {
+                                let mut termtext = TERMTEXT.lock().unwrap();
+                                termtext.mode = BufferMode::Normal;
+                                termtext.command = None;
+                            },
+                            (BufferMode::Insert, Key::Backspace) => {
+                                let mut termtext = TERMTEXT.lock().unwrap();
+                                termtext.data.pop();
+                            },
+                            (BufferMode::Insert, Key::Char(c)) => {
+                                let mut termtext = TERMTEXT.lock().unwrap();
+                                termtext.data.push(*c);
+                            },
+                            (BufferMode::Command, Key::Char(c)) => {
+                                if *c == '\n' {
+                                    let mut termtext = TERMTEXT.lock().unwrap();
+                                    let command = termtext.command.take().unwrap();
+                                    termtext.mode = BufferMode::Normal;
+                                    sender.send(ServerEvent::IssueCommand(command))?;
+                                } else if *c == '\t' {
+                                    break;
+                                } else {
+                                    let mut termtext = TERMTEXT.lock().unwrap();
+                                    termtext.command.as_mut().unwrap().push(*c);
+                                }
+                            },
+                            (BufferMode::Command, Key::Backspace) => {
+                                let mut termtext = TERMTEXT.lock().unwrap();
+                                termtext.command.as_mut().unwrap().pop();
+                            },
+                            (mode, key) => {
+                                info!("Unknown keybind: {mode:?} {key:?}");
+                            },
                         }
                         send_update(&mut connection, current_size)?;
                     },
@@ -264,6 +333,17 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
 
                 let data: String = get_termtext_data();
                 file.write_all(&data.as_bytes())?;
+            },
+            ServerEvent::IssueCommand(command) => {
+                info!("COMMAND: {command:?}");
+                let command_parts: Vec<&str> = command.split(' ').collect();
+                if command_parts[0] == "open" {
+                    let filename = command_parts[1].to_owned();
+                    sender.send(ServerEvent::OpenFile(filename))?;
+                } else if command_parts[0] == "write" {
+                    let filename = command_parts[1].to_owned();
+                    sender.send(ServerEvent::SaveFile(filename))?;
+                }
             },
         }
     }
