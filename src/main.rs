@@ -21,10 +21,11 @@ const IPC_DIR: &'static str = "/home/tac-tics/projects/tt/ipc";
 fn clear_screen<T: Write>(stdout: &mut RawTerminal<T>) {
     write!(
         stdout,
-       "{}{}",
-       termion::clear::All,
-       termion::cursor::Goto(1, 1),
-   ).unwrap();
+        "{}{}",
+        termion::clear::All,
+        termion::cursor::Goto(1, 1),
+    ).unwrap();
+    stdout.flush().unwrap();
 }
 
 fn keyboard_input_thread(sender: mpsc::Sender<ClientEvent>) {
@@ -138,6 +139,9 @@ fn main() {
                     info!("Detected C-c. Exiting.");
                     connection.send(message::ClientMessage::Disconnect).unwrap();
                     break 'runloop;
+                } else if key == Key::Ctrl('r') {
+                    info!("Requesting refresh");
+                    connection.send(message::ClientMessage::RequestRefresh).unwrap();
                 }
 
                 stdout.flush().unwrap();

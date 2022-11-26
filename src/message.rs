@@ -11,6 +11,7 @@ pub type Size = (u16, u16);
 #[derive(Hash, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum ClientMessage {
     Connect,
+    RequestRefresh,
     SendInput(Keycode),
     Resize(Size),
     Disconnect,
@@ -38,6 +39,7 @@ pub trait WriteClientMessage: Write {
         let json_data_len: u64 = json_data.len().try_into().unwrap();
         self.write_u64::<LittleEndian>(json_data_len)?;
         self.write(json_data.as_bytes())?;
+        self.flush()?;
         Ok(())
     }
 }
@@ -60,6 +62,7 @@ pub trait WriteServerMessage: Write {
         let json_data_len: u64 = json_data.len().try_into().unwrap();
         self.write_u64::<LittleEndian>(json_data_len)?;
         self.write(json_data.as_bytes())?;
+        self.flush()?;
         Ok(())
     }
 }
@@ -67,6 +70,8 @@ pub trait WriteServerMessage: Write {
 pub trait ReadServerMessage: Read {
     fn read_message(&mut self) -> std::io::Result<ServerMessage> {
         let json_data_len: usize = self.read_u64::<LittleEndian>()?.try_into().unwrap();
+        // TODO: This sleep seems to prevent a memory allocation error.
+        std::thread::sleep(std::time::Duration::from_millis(1));
         let mut message_buf = vec![0u8; json_data_len];
         self.read(&mut message_buf[..json_data_len])?;
         let message: ServerMessage = serde_json::from_slice(&mut message_buf)?;
