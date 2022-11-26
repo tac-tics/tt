@@ -1,20 +1,19 @@
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use interprocess::local_socket::{LocalSocketListener, LocalSocketStream};
-use signal_hook::{consts::{SIGTERM, SIGINT}, iterator::Signals};
+use interprocess::local_socket::LocalSocketStream;
+//use signal_hook::{consts::{SIGTERM, SIGINT}, iterator::Signals};
 use simplelog::*;
-use log::{info, warn, error, debug};
+use log::*;
 
 use termion::raw::IntoRawMode;
 use termion::event::Key;
-use std::io::{Read, Write, stdout, stdin};
-use std::thread;
+use std::io::{Write, stdout, stdin};
 use termion::raw::RawTerminal;
 use std::time::Duration;
 
 pub mod message;
 
-use message::{ServerMessage, ClientMessage};
+use message::{ServerMessage, ClientMessage, Position};
 
 const IPC_DIR: &'static str = "/home/tac-tics/projects/tt/ipc";
 
@@ -41,8 +40,10 @@ fn keyboard_input_thread(sender: mpsc::Sender<ClientEvent>) {
 
 fn server_message_received_thread(mut connection: Connection, sender: mpsc::Sender<ClientEvent>) {
     loop {
-        let message = connection.receive().unwrap();
-        sender.send(ClientEvent::ServerMessageReceived(message)).unwrap();
+        if let Some(message) = connection.receive().unwrap() {
+            sender.send(ClientEvent::ServerMessageReceived(message)).unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_micros(1));
     }
 }
 
@@ -79,23 +80,29 @@ impl Connection {
         conn.write_message(message)
     }
 
-    fn receive(&mut self) -> std::io::Result<message::ServerMessage> {
-        loop {
-            let mut conn = self.connection.lock().unwrap();
-            use message::ReadServerMessage;
-            match conn.read_message() {
-                Ok(message) => {
-                    debug!("Received message: {:?}", &message);
-                    return Ok(message);
-                },
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_secs(0)),
-                Err(e) => {
-                    error!("Error when reading socket: {e:?}");
-                    return Err(e);
-                },
-            }
+    fn receive(&mut self) -> std::io::Result<Option<message::ServerMessage>> {
+        let mut conn = self.connection.lock().unwrap();
+        use message::ReadServerMessage;
+        match conn.read_message() {
+            Ok(message) => {
+                debug!("Received message: {:?}", &message);
+                return Ok(Some(message));
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_secs(0));
+                return Ok(None);
+            },
+            Err(e) => {
+                error!("Error when reading socket: {e:?}");
+                return Err(e);
+            },
         }
     }
+}
+
+fn goto<T: Write>(stdout: &mut T, pos: Position) -> anyhow::Result<()> {
+    write!(stdout, "{}", termion::cursor::Goto(pos.0 + 1, pos.1 + 1))?;
+    Ok(())
 }
 
 
@@ -156,20 +163,25 @@ fn main() {
             ClientEvent::ServerMessageReceived(message) => {
                 info!("Received message: {message:?}");
                 match message {
-                    ServerMessage::Update(pos, ch) => {
-                        write!(
-                            stdout,
-                            "{}{ch}",
-                            termion::cursor::Goto(pos.0 + 1, pos.1 + 1),
-                        ).unwrap();
+                    ServerMessage::Update((x, y), (width, height), lines) => {
+                        let empty = String::new();
+
+                        for i in 0..height {
+                            let line: &str = &lines.get(i as usize).unwrap_or_else(|| &empty);
+                            let cur_pos = (x, y + i as u16);
+                            goto(&mut stdout, cur_pos).unwrap();
+                            for ch in line.chars().take(width as usize) {
+                                write!(stdout, "{}", ch).unwrap();
+                            }
+                            for _ in line.len()..width as usize {
+                                write!(stdout, "{}", ' ').unwrap();
+                            }
+                        }
+
                         stdout.flush().unwrap();
                     },
                     ServerMessage::Cursor(pos) => {
-                        write!(
-                            stdout,
-                            "{}",
-                            termion::cursor::Goto(pos.0 + 1, pos.1 + 1),
-                        ).unwrap();
+                        goto(&mut stdout, pos).unwrap();
                         stdout.flush().unwrap();
                     },
                     _ => (),

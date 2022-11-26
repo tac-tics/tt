@@ -9,6 +9,7 @@ use log::{info, warn, error, debug};
 use lazy_static::lazy_static;
 use serde::{Serialize, Deserialize};
 use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod message;
 use message::{ClientMessage, ServerMessage};
@@ -112,22 +113,24 @@ impl Connection {
         conn.write_message(message)
     }
 
-    fn receive(&mut self) -> std::io::Result<message::ClientMessage> {
-        loop {
-            let mut conn = self.connection.lock().unwrap();
-            use message::ReadClientMessage;
-            match conn.read_message() {
-                Ok(message) => {
-                    debug!("Received message: {:?}", &message);
-                    return Ok(message);
-                },
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => std::thread::sleep(Duration::from_secs(0)),
-                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => std::thread::sleep(Duration::from_secs(0)),
-                Err(e) => {
-                    error!("Error when reading socket: {e:?}");
-                    return Err(e);
-                },
-            }
+    fn receive(&mut self) -> std::io::Result<Option<message::ClientMessage>> {
+        let mut conn = self.connection.lock().unwrap();
+        use message::ReadClientMessage;
+        match conn.read_message() {
+            Ok(message) => {
+                debug!("Received message: {:?}", &message);
+                return Ok(Some(message));
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                return Ok(None);
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Ok(None);
+            },
+            Err(e) => {
+                error!("Error when reading socket: {e:?}");
+                return Err(e);
+            },
         }
     }
 }
@@ -139,53 +142,70 @@ enum ServerEvent {
     SaveFile(String),
 }
 
-fn client_message_received_thread(mut connection: Connection, sender: mpsc::Sender<ServerEvent>) {
-    loop {
-        let message = connection.receive().unwrap();
-        sender.send(ServerEvent::ClientMessageReceived(message)).unwrap();
+fn client_message_received_thread(
+    running: Arc<AtomicBool>,
+    mut connection: Connection,
+    sender: mpsc::Sender<ServerEvent>,
+) {
+    while running.load(Ordering::SeqCst) {
+        if let Some(message) = connection.receive().unwrap() {
+            sender.send(ServerEvent::ClientMessageReceived(message)).unwrap();
+        }
+
+        std::thread::sleep(Duration::from_micros(1));
     }
 }
 
+
+fn get_termtext_data() -> String {
+    let termtext = TERMTEXT.lock().unwrap();
+    termtext.data.clone()
+}
+
 fn send_update(connection: &mut Connection) -> anyhow::Result<()> {
-    info!("called send_update");
-    let mut pos = (0, 0);
-    let data = {
-        if let Ok(termtext) = TERMTEXT.lock() {
-            termtext.data.clone()
-        } else {
-            error!("UH OH");
-            panic!()
-        }
-    };
+    let pos = (0, 0);
+    let size = (80, 50);
+    let mut cursor_pos = pos;
+
+    let mut lines = Vec::new();
+
+    let data = get_termtext_data();
     info!("Trying to send {data}");
+
+    let mut line = String::new();
 
     for ch in data.chars() {
         if ch == '\n' {
-            pos = (0, pos.1 + 1);
+            lines.push(line);
+            line = String::new();
+            cursor_pos.0 = 0;
+            cursor_pos.1 += 1;
         } else if ch == '\t' {
-            pos.0 = pos.0 + 4;
+            line.push_str("    ");
+            cursor_pos.0 += 4;
         } else {
-            info!("About to send it... ");
-            connection.send(ServerMessage::Update(pos, ch))?;
-            std::thread::sleep(Duration::from_millis(1));
-            info!("Ok");
-            pos.0 = pos.0 + 1;
+            line.push(ch);
+            cursor_pos.0 += 1;
         }
     }
-    // one last space to help with backspace
-    connection.send(ServerMessage::Update(pos, ' '))?;
-    connection.send(ServerMessage::Cursor(pos))?;
+
+    lines.push(line);
+
+    connection.send(ServerMessage::Update(pos, size, lines))?;
+    connection.send(ServerMessage::Cursor(cursor_pos))?;
     Ok(())
 }
 
 fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
     let mut connection = Connection::make(connection);
     let (sender, receiver) = mpsc::channel();
+    let running = Arc::new(AtomicBool::new(true));
 
     let connection1 = connection.clone();
     let sender1 = sender.clone();
-    std::thread::spawn(|| {
-        client_message_received_thread(connection1, sender1);
+    let running1 = running.clone();
+    let thread = std::thread::spawn(|| {
+        client_message_received_thread(running1, connection1, sender1);
     });
 
     'serve_loop: loop {
@@ -234,15 +254,17 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
             },
             ServerEvent::SaveFile(filepath) => {
                 info!("Handling SaveFile({filepath:?})");
-                let mut file = std::fs::File::options().write(true).open(filepath)?;
-                let data: String = {
-                    info!("TAKING LOCK");
-                    let termtext = TERMTEXT.lock().unwrap();
-                    termtext.data.clone()
-                };
+                let mut file = std::fs::File::options()
+                    .write(true)
+                    .truncate(true)
+                    .open(filepath)?;
+
+                let data: String = get_termtext_data();
                 file.write_all(&data.as_bytes())?;
             },
         }
     }
+    running.store(false, Ordering::SeqCst);
+    thread.join().unwrap();
     Ok(())
 }

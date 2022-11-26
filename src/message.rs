@@ -21,7 +21,7 @@ pub enum ClientMessage {
 #[derive(Hash, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum ServerMessage {
     Log(String),
-    Update(Position, char),
+    Update(Position, Size, Vec<String>),
     Cursor(Position),
     Shutdown,
 }
