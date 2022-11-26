@@ -135,10 +135,17 @@ fn main() {
         let event = receiver.recv().unwrap();
         match event {
             ClientEvent::Key(key) => {
-                if key == Key::Ctrl('c') {
+                if let Key::Char(c) = key {
+                    connection.send(message::ClientMessage::SendInput(c)).unwrap();
+                } else if key == Key::Backspace {
+                    connection.send(message::ClientMessage::SendInput('\x08')).unwrap();
+                } else if key == Key::Ctrl('c') {
                     info!("Detected C-c. Exiting.");
                     connection.send(message::ClientMessage::Disconnect).unwrap();
                     break 'runloop;
+                } else if key == Key::Ctrl('s') {
+                    info!("Saving");
+                    connection.send(message::ClientMessage::Save).unwrap();
                 } else if key == Key::Ctrl('r') {
                     info!("Requesting refresh");
                     connection.send(message::ClientMessage::RequestRefresh).unwrap();
@@ -153,6 +160,14 @@ fn main() {
                         write!(
                             stdout,
                             "{}{ch}",
+                            termion::cursor::Goto(pos.0 + 1, pos.1 + 1),
+                        ).unwrap();
+                        stdout.flush().unwrap();
+                    },
+                    ServerMessage::Cursor(pos) => {
+                        write!(
+                            stdout,
+                            "{}",
                             termion::cursor::Goto(pos.0 + 1, pos.1 + 1),
                         ).unwrap();
                         stdout.flush().unwrap();

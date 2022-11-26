@@ -136,6 +136,7 @@ impl Connection {
 enum ServerEvent {
     ClientMessageReceived(message::ClientMessage),
     OpenFile(String),
+    SaveFile(String),
 }
 
 fn client_message_received_thread(mut connection: Connection, sender: mpsc::Sender<ServerEvent>) {
@@ -171,6 +172,9 @@ fn send_update(connection: &mut Connection) -> anyhow::Result<()> {
             pos.0 = pos.0 + 1;
         }
     }
+    // one last space to help with backspace
+    connection.send(ServerMessage::Update(pos, ' '))?;
+    connection.send(ServerMessage::Cursor(pos))?;
     Ok(())
 }
 
@@ -182,19 +186,6 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
     let sender1 = sender.clone();
     std::thread::spawn(|| {
         client_message_received_thread(connection1, sender1);
-    });
-
-    let sender2 = sender.clone();
-    std::thread::spawn(move || {
-        loop {
-            let path = format!("{IPC_DIR}/hello.txt");
-            sender2.send(ServerEvent::OpenFile(path)).unwrap();
-            std::thread::sleep(Duration::from_millis(1));
-
-            let path = format!("{IPC_DIR}/world.txt");
-            sender2.send(ServerEvent::OpenFile(path)).unwrap();
-            std::thread::sleep(Duration::from_millis(1));
-        }
     });
 
     'serve_loop: loop {
@@ -212,6 +203,19 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
                         send_update(&mut connection)?;
                     },
                     ClientMessage::Disconnect => break 'serve_loop,
+                    ClientMessage::Save => {
+                        sender.send(ServerEvent::SaveFile(format!("{IPC_DIR}/hello.txt")))?;
+                    },
+                    ClientMessage::SendInput(c) => {
+                        if *c == '\x08' {
+                            let mut termtext = TERMTEXT.lock().unwrap();
+                            termtext.data.pop();
+                        } else {
+                            let mut termtext = TERMTEXT.lock().unwrap();
+                            termtext.data.push(*c);
+                        }
+                        send_update(&mut connection)?;
+                    },
                     _ => info!("{:?}", &message),
                 }
             },
@@ -227,6 +231,16 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
                     termtext.data = data;
                 }
                 send_update(&mut connection)?;
+            },
+            ServerEvent::SaveFile(filepath) => {
+                info!("Handling SaveFile({filepath:?})");
+                let mut file = std::fs::File::options().write(true).open(filepath)?;
+                let data: String = {
+                    info!("TAKING LOCK");
+                    let termtext = TERMTEXT.lock().unwrap();
+                    termtext.data.clone()
+                };
+                file.write_all(&data.as_bytes())?;
             },
         }
     }

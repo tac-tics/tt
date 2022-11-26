@@ -3,7 +3,6 @@ use serde::{Serialize, Deserialize};
 use serde_json;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-pub type Keycode = u16;
 pub type Position = (u16, u16);
 pub type Size = (u16, u16);
 
@@ -12,8 +11,9 @@ pub type Size = (u16, u16);
 pub enum ClientMessage {
     Connect,
     RequestRefresh,
-    SendInput(Keycode),
+    SendInput(char),
     Resize(Size),
+    Save,
     Disconnect,
 }
 
@@ -22,6 +22,7 @@ pub enum ClientMessage {
 pub enum ServerMessage {
     Log(String),
     Update(Position, char),
+    Cursor(Position),
     Shutdown,
 }
 
