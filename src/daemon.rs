@@ -155,8 +155,9 @@ impl Connection {
 #[derive(Debug)]
 enum ServerEvent {
     ClientMessageReceived(message::ClientMessage),
-    OpenFile(String),
-    SaveFile(String),
+    OpenFile(PathBuf),
+    WriteFile(PathBuf),
+    CloseFile(),
     IssueCommand(String),
 }
 
@@ -174,6 +175,10 @@ fn client_message_received_thread(
     }
 }
 
+fn get_termtext_path() -> Option<PathBuf> {
+    let termtext = TERMTEXT.lock().unwrap();
+    termtext.path.clone()
+}
 
 fn get_termtext_data() -> String {
     let termtext = TERMTEXT.lock().unwrap();
@@ -221,6 +226,8 @@ fn send_update(connection: &mut Connection, size: Size) -> anyhow::Result<()> {
         status_line.push_str(&format!("{:?}", termtext.mode));
         if let Some(command) = &termtext.command {
             status_line.push_str(&format!(" {}", command));
+        } else if let Some(path) = &termtext.path {
+            status_line.push_str(&format!(" {path:?}"));
         }
     }
     connection.send(ServerMessage::Update(status_pos, status_size, vec![status_line]))?;
@@ -257,8 +264,14 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
                     ClientMessage::RequestRefresh => {
                         send_update(&mut connection, current_size)?;
                     },
-                    ClientMessage::Disconnect => break 'serve_loop,
+                    ClientMessage::Disconnect => {
+                        let mut termtext = TERMTEXT.lock().unwrap();
+                        termtext.mode = BufferMode::Normal;
+                        termtext.command = None;
+                        break 'serve_loop;
+                    },
                     ClientMessage::SendInput(key) => {
+                        info!("{:?}", (get_termtext_mode(), key));
                         match (get_termtext_mode(), key) {
                             (BufferMode::Normal, Key::Char('i')) => {
                                 let mut termtext = TERMTEXT.lock().unwrap();
@@ -313,19 +326,18 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
             },
             ServerEvent::OpenFile(filepath) => {
                 info!("Handling OpenFile({filepath:?})");
-                let mut file = std::fs::File::open(filepath)?;
+                let mut file = std::fs::File::open(&filepath)?;
                 let mut data = String::new();
                 file.read_to_string(&mut data)?;
-                info!("TAKING LOCK");
                 {
                     let mut termtext = TERMTEXT.lock().unwrap();
-                    info!("File data is now {data}");
                     termtext.data = data;
+                    termtext.path = Some(filepath.clone());
                 }
                 send_update(&mut connection, current_size)?;
             },
-            ServerEvent::SaveFile(filepath) => {
-                info!("Handling SaveFile({filepath:?})");
+            ServerEvent::WriteFile(filepath) => {
+                info!("Handling WriteFile({filepath:?})");
                 let mut file = std::fs::File::options()
                     .write(true)
                     .truncate(true)
@@ -334,15 +346,26 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
                 let data: String = get_termtext_data();
                 file.write_all(&data.as_bytes())?;
             },
+            ServerEvent::CloseFile() => {
+                info!("Handling CloseFile()");
+                {
+                    let mut termtext = TERMTEXT.lock().unwrap();
+                    termtext.path = None;
+                    termtext.data = String::new();
+                }
+                send_update(&mut connection, current_size)?;
+            },
             ServerEvent::IssueCommand(command) => {
                 info!("COMMAND: {command:?}");
-                let command_parts: Vec<&str> = command.split(' ').collect();
+                let command_parts: Vec<String> = command.split(' ').map(|s| s.to_owned()).collect();
                 if command_parts[0] == "open" {
-                    let filename = command_parts[1].to_owned();
+                    let filename = PathBuf::from(command_parts[1].to_owned());
                     sender.send(ServerEvent::OpenFile(filename))?;
                 } else if command_parts[0] == "write" {
-                    let filename = command_parts[1].to_owned();
-                    sender.send(ServerEvent::SaveFile(filename))?;
+                    let filename: PathBuf = command_parts.get(1).map(|s| PathBuf::from(s)).or_else(|| get_termtext_path()).unwrap();
+                    sender.send(ServerEvent::WriteFile(filename))?;
+                } else if command_parts[0] == "close" {
+                    sender.send(ServerEvent::CloseFile())?;
                 }
             },
         }
