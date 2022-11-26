@@ -12,7 +12,7 @@ use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod message;
-use message::{ClientMessage, ServerMessage, Size};
+use message::{ClientMessage, ServerMessage, Size, Key};
 
 const IPC_DIR: &'static str = "/home/tac-tics/projects/tt/ipc";
 
@@ -224,16 +224,15 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
                         send_update(&mut connection, current_size)?;
                     },
                     ClientMessage::Disconnect => break 'serve_loop,
-                    ClientMessage::Save => {
-                        sender.send(ServerEvent::SaveFile(format!("{IPC_DIR}/hello.txt")))?;
-                    },
-                    ClientMessage::SendInput(c) => {
-                        if *c == '\x08' {
+                    ClientMessage::SendInput(key) => {
+                        if *key == Key::Backspace {
                             let mut termtext = TERMTEXT.lock().unwrap();
                             termtext.data.pop();
-                        } else {
+                        } else if let Key::Char(c) = key {
                             let mut termtext = TERMTEXT.lock().unwrap();
                             termtext.data.push(*c);
+                        } else if let Key::Ctrl('s') = key {
+                            sender.send(ServerEvent::SaveFile(format!("{IPC_DIR}/hello.txt")))?;
                         }
                         send_update(&mut connection, current_size)?;
                     },

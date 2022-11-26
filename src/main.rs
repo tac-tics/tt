@@ -57,7 +57,7 @@ fn resize_listener(sender: mpsc::Sender<ClientEvent>) {
             sender.send(ClientEvent::Resize(size)).unwrap();
             current_size = size;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
 
@@ -159,23 +159,14 @@ fn main() {
         let event = receiver.recv().unwrap();
         match event {
             ClientEvent::Key(key) => {
-                if let Key::Char(c) = key {
-                    connection.send(message::ClientMessage::SendInput(c)).unwrap();
-                } else if key == Key::Backspace {
-                    connection.send(message::ClientMessage::SendInput('\x08')).unwrap();
-                } else if key == Key::Ctrl('c') {
+                if key == Key::Ctrl('c') {
                     info!("Detected C-c. Exiting.");
                     connection.send(message::ClientMessage::Disconnect).unwrap();
                     break 'runloop;
-                } else if key == Key::Ctrl('s') {
-                    info!("Saving");
-                    connection.send(message::ClientMessage::Save).unwrap();
-                } else if key == Key::Ctrl('r') {
-                    info!("Requesting refresh");
-                    connection.send(message::ClientMessage::RequestRefresh).unwrap();
+                } else {
+                    let message = message::ClientMessage::SendInput(key.into());
+                    connection.send(message).unwrap();
                 }
-
-                stdout.flush().unwrap();
             },
             ClientEvent::ServerMessageReceived(message) => {
                 info!("Received message: {message:?}");
