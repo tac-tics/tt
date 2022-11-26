@@ -12,6 +12,7 @@ pub type Size = (u16, u16);
 pub enum ClientMessage {
     Connect,
     RequestRefresh,
+    Open(String),
     SendInput(Key),
     Resize(Size),
     Disconnect,

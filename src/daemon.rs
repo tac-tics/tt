@@ -264,6 +264,9 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
                     ClientMessage::RequestRefresh => {
                         send_update(&mut connection, current_size)?;
                     },
+                    ClientMessage::Open(filename) => {
+                        sender.send(ServerEvent::OpenFile(PathBuf::from(filename)))?;
+                    },
                     ClientMessage::Disconnect => {
                         let mut termtext = TERMTEXT.lock().unwrap();
                         termtext.mode = BufferMode::Normal;

@@ -155,6 +155,13 @@ fn main() {
     clear_screen(&mut stdout);
     connection.send(message::ClientMessage::Connect).unwrap();
 
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(filename) = args.get(1).cloned() {
+        let filename = std::fs::canonicalize(filename).unwrap().to_str().unwrap().to_string();
+        info!("Opening file: {filename:?}");
+        connection.send(message::ClientMessage::Open(filename)).unwrap();
+    }
+
     'runloop: loop {
         let event = receiver.recv().unwrap();
         match event {
