@@ -13,7 +13,7 @@ use std::time::Duration;
 
 pub mod message;
 
-use message::{ServerMessage, ClientMessage, Position};
+use message::{ServerMessage, ClientMessage, Position, Size};
 
 const IPC_DIR: &'static str = "/home/tac-tics/projects/tt/ipc";
 
@@ -47,9 +47,24 @@ fn server_message_received_thread(mut connection: Connection, sender: mpsc::Send
     }
 }
 
+fn resize_listener(sender: mpsc::Sender<ClientEvent>) {
+    let mut current_size = (1, 1);
+    loop {
+        let size = termion::terminal_size().unwrap();
+
+        if current_size != size {
+            info!("Window size changed is {size:?}");
+            sender.send(ClientEvent::Resize(size)).unwrap();
+            current_size = size;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 enum ClientEvent {
     Key(Key),
     ServerMessageReceived(message::ServerMessage),
+    Resize(Size),
 }
 
 #[derive(Clone)]
@@ -130,10 +145,12 @@ fn main() {
     let (sender, receiver) = mpsc::channel();
 
     let keyboard_input_thread_receiver = sender.clone();
+    let resize_receiver = sender.clone();
     let server_message_receiver = sender;
     let connection2 = connection.clone();
     std::thread::spawn(move || keyboard_input_thread(keyboard_input_thread_receiver));
     std::thread::spawn(move || server_message_received_thread(connection2, server_message_receiver));
+    std::thread::spawn(move || resize_listener(resize_receiver));
 
     clear_screen(&mut stdout);
     connection.send(message::ClientMessage::Connect).unwrap();
@@ -186,6 +203,10 @@ fn main() {
                     },
                     _ => (),
                 }
+            },
+            ClientEvent::Resize(size) => {
+                info!("Issuing resize");
+                connection.send(ClientMessage::Resize(size)).unwrap();
             },
         }
     }

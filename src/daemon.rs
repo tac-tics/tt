@@ -12,7 +12,7 @@ use std::time::Duration;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod message;
-use message::{ClientMessage, ServerMessage};
+use message::{ClientMessage, ServerMessage, Size};
 
 const IPC_DIR: &'static str = "/home/tac-tics/projects/tt/ipc";
 
@@ -162,9 +162,8 @@ fn get_termtext_data() -> String {
     termtext.data.clone()
 }
 
-fn send_update(connection: &mut Connection) -> anyhow::Result<()> {
+fn send_update(connection: &mut Connection, size: Size) -> anyhow::Result<()> {
     let pos = (0, 0);
-    let size = (80, 50);
     let mut cursor_pos = pos;
 
     let mut lines = Vec::new();
@@ -208,6 +207,8 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
         client_message_received_thread(running1, connection1, sender1);
     });
 
+    let mut current_size = (80u16, 50u16);
+
     'serve_loop: loop {
         info!("About to get next message");
         let message = receiver.recv()?;
@@ -217,10 +218,10 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
                 info!("Received message: {message:?}");
                 match message {
                     ClientMessage::Connect => {
-                        send_update(&mut connection)?;
+                        send_update(&mut connection, current_size)?;
                     },
                     ClientMessage::RequestRefresh => {
-                        send_update(&mut connection)?;
+                        send_update(&mut connection, current_size)?;
                     },
                     ClientMessage::Disconnect => break 'serve_loop,
                     ClientMessage::Save => {
@@ -234,9 +235,12 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
                             let mut termtext = TERMTEXT.lock().unwrap();
                             termtext.data.push(*c);
                         }
-                        send_update(&mut connection)?;
+                        send_update(&mut connection, current_size)?;
                     },
-                    _ => info!("{:?}", &message),
+                    ClientMessage::Resize(size) => {
+                        current_size = *size;
+                        send_update(&mut connection, current_size)?;
+                    },
                 }
             },
             ServerEvent::OpenFile(filepath) => {
@@ -250,7 +254,7 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
                     info!("File data is now {data}");
                     termtext.data = data;
                 }
-                send_update(&mut connection)?;
+                send_update(&mut connection, current_size)?;
             },
             ServerEvent::SaveFile(filepath) => {
                 info!("Handling SaveFile({filepath:?})");
