@@ -34,6 +34,7 @@ impl Default for BufferMode {
 pub struct TermTextState {
     pub path: Option<PathBuf>,
     pub command: Option<String>,
+    pub pos: u64,
     pub data: String,
     pub mode: BufferMode,
 }
@@ -185,6 +186,11 @@ fn get_termtext_data() -> String {
     termtext.data.clone()
 }
 
+fn get_termtext_pos() -> u64 {
+    let termtext = TERMTEXT.lock().unwrap();
+    termtext.pos
+}
+
 fn get_termtext_mode() -> BufferMode {
     let termtext = TERMTEXT.lock().unwrap();
     termtext.mode
@@ -197,22 +203,35 @@ fn send_update(connection: &mut Connection, size: Size) -> anyhow::Result<()> {
     let mut lines = Vec::new();
 
     let data = get_termtext_data();
-    let mut line = String::new();
+    let mut line = "    1 | ".to_string();
+
+    let mut idx: u64 = get_termtext_pos();
 
     for ch in data.chars() {
         if ch == '\n' {
             lines.push(line);
-            line = String::new();
-            cursor_pos.0 = 0;
-            cursor_pos.1 += 1;
+            line = format!("{:5} | ", lines.len() + 1);
+            if idx > 0 {
+                cursor_pos.0 = 0;
+                cursor_pos.1 += 1;
+                idx -= 1;
+            }
         } else if ch == '\t' {
             line.push_str("    ");
-            cursor_pos.0 += 4;
+            if idx > 0 {
+                cursor_pos.0 += 4;
+                idx -= 1;
+            }
         } else {
             line.push(ch);
-            cursor_pos.0 += 1;
+            if idx > 0 {
+                cursor_pos.0 += 1;
+                idx -= 1;
+            }
         }
     }
+
+    cursor_pos.0 += 8; // for the line numbering
 
     lines.push(line);
 
@@ -285,6 +304,30 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
                                 termtext.mode = BufferMode::Command;
                                 termtext.command = Some(String::new());
                             },
+                            (BufferMode::Normal, Key::Char('h')) => {
+                                let mut termtext = TERMTEXT.lock().unwrap();
+                                if termtext.pos > 0 {
+                                    termtext.pos -= 1;
+                                }
+                            },
+                            (BufferMode::Normal, Key::Char(' ')) => {
+                                let mut termtext = TERMTEXT.lock().unwrap();
+                                if termtext.pos > 0 {
+                                    termtext.pos += 1;
+                                }
+                            },
+                            (BufferMode::Normal, Key::Backspace) => {
+                                let mut termtext = TERMTEXT.lock().unwrap();
+                                if termtext.pos > 0 {
+                                    termtext.pos -= 1;
+                                }
+                            },
+                            (BufferMode::Normal, Key::Char('l')) => {
+                                let mut termtext = TERMTEXT.lock().unwrap();
+                                if (termtext.pos as usize) < termtext.data.len() {
+                                    termtext.pos += 1;
+                                }
+                            },
                             (_, Key::Esc) => {
                                 let mut termtext = TERMTEXT.lock().unwrap();
                                 termtext.mode = BufferMode::Normal;
@@ -292,11 +335,17 @@ fn handle_connection(connection: LocalSocketStream) -> anyhow::Result<()> {
                             },
                             (BufferMode::Insert, Key::Backspace) => {
                                 let mut termtext = TERMTEXT.lock().unwrap();
-                                termtext.data.pop();
+                                let idx = termtext.pos as usize;
+                                if idx > 0 && idx <= termtext.data.len() {
+                                    let ch = termtext.data.remove(idx - 1);
+                                    info!("deleting character at: {} = {}", idx - 1, ch);
+                                    termtext.pos -= 1;
+                                }
                             },
                             (BufferMode::Insert, Key::Char(c)) => {
                                 let mut termtext = TERMTEXT.lock().unwrap();
                                 termtext.data.push(*c);
+                                termtext.pos += 1;
                             },
                             (BufferMode::Command, Key::Char(c)) => {
                                 if *c == '\n' {
