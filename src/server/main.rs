@@ -70,9 +70,7 @@ impl Server {
         let bt = backtrace::Backtrace::new();
         let thread = std::thread::current();
         let thread_name = thread.name().unwrap();
-        warn!("Attempting to take server lock: {thread_name}\n\n{bt:?}\n");
         let guard = ServerMutexGuard(SERVER.lock().unwrap());
-        warn!("Taking server lock: {thread_name}");
         guard
     }
 
@@ -119,7 +117,6 @@ impl<'a> std::ops::DerefMut for ServerMutexGuard<'a> {
 }
 impl<'a> Drop for ServerMutexGuard<'a> {
     fn drop(&mut self) {
-        warn!("Releasing server lock");
     }
 }
 
@@ -175,22 +172,22 @@ fn trap_signals() {
     let mut signals = Signals::new(&[SIGTERM, SIGINT]).unwrap();
     std::thread::spawn(move || {
         for sig in signals.forever() {
-            warn!("Received signal: {sig}");
+            debug!("Received signal: {sig}");
             let pid_file = &format!("{IPC_DIR}/tt.pid");
             let path = std::path::Path::new(pid_file);
             if path.exists() {
                 std::fs::remove_file(path).unwrap();
-                warn!("Removing PID file: {pid_file}");
+                debug!("Removing PID file: {pid_file}");
             }
 
             let sock_file = &format!("{IPC_DIR}/tt.sock");
             let path = std::path::Path::new(sock_file);
             if path.exists() {
                 std::fs::remove_file(path).unwrap();
-                warn!("Removing sock file: {sock_file}");
+                debug!("Removing sock file: {sock_file}");
             }
 
-            warn!("Exiting");
+            info!("Exiting");
             std::process::exit(0)
         }
     });
@@ -234,12 +231,22 @@ fn send_update() -> anyhow::Result<()> {
     let mut lines = Vec::new();
 
     let data = Server::get().state.data.clone();
-    let mut line = String::new();
+    let show_line_numbers = true;
+
+    let mut line = if show_line_numbers {
+        "     1 | ".to_string()
+    } else {
+         String::new()
+    };
 
     for ch in data.chars() {
         if ch == '\n' {
             lines.push(line);
-            line = String::new();
+            line = if show_line_numbers {
+                format!("{:6} | ", cursor_pos.1 + 2)
+            } else {
+                 String::new()
+            };
             cursor_pos.0 = 0;
             cursor_pos.1 += 1;
         } else if ch == '\t' {
@@ -272,6 +279,9 @@ fn send_update() -> anyhow::Result<()> {
     });
     connection.send(ServerMessage::Update(status_pos, status_size, vec![status_line]))?;
 
+    if show_line_numbers {
+        cursor_pos.0 += 9;
+    }
     connection.send(ServerMessage::Cursor(cursor_pos))?;
     Ok(())
 }
@@ -304,11 +314,9 @@ fn server_event_loop_thread(event_receiver: mpsc::Receiver<ServerEvent>) -> anyh
                         send_update()?;
                     },
                     ClientMessage::Resize(size) => {
-                        warn!("Resizing to {size:?}");
                         Server::with_state(|state| {
                             state.size = size;
                         });
-                        warn!("Now updating...");
                         send_update()?;
                     },
                 }
@@ -417,7 +425,6 @@ fn handle_input(key: Key) -> anyhow::Result<()> {
             info!("Unknown keybind: {mode:?} {key:?}");
         },
     }
-    warn!("mode is now: {:?}", Server::get().state.mode);
     send_update()?;
     Ok(())
 }
