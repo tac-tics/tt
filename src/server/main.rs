@@ -246,14 +246,15 @@ fn handle_server_event(event: ServerEvent) -> anyhow::Result<()> {
         ServerEvent::ClientMessageReceived(client, message) => {
             info!("Received message: {message:?}");
             match message {
-                ClientMessage::Connect => {
+                ClientMessage::Connect(args) => {
+                    if args.len() > 0 {
+                        let filename = &args[0];
+                        Server::trigger(ServerEvent::OpenFile(PathBuf::from(filename)))?;
+                    }
                     send_update()?;
                 },
                 ClientMessage::RequestRefresh => {
                     send_update()?;
-                },
-                ClientMessage::Open(filename) => {
-                    Server::trigger(ServerEvent::OpenFile(PathBuf::from(filename)))?;
                 },
                 ClientMessage::Disconnect => {
                     Server::with_state(|state| {
@@ -291,6 +292,7 @@ fn handle_server_event(event: ServerEvent) -> anyhow::Result<()> {
             let mut file = std::fs::File::options()
                 .write(true)
                 .truncate(true)
+                .create(true)
                 .open(filepath)?;
 
             let data: String = Server::get().state.data.clone();
@@ -307,17 +309,22 @@ fn handle_server_event(event: ServerEvent) -> anyhow::Result<()> {
         ServerEvent::IssueCommand(command) => {
             info!("COMMAND: {command:?}");
             let command_parts: Vec<String> = command.split(' ').map(|s| s.to_owned()).collect();
-            if command_parts[0] == "open" {
-                let filename = PathBuf::from(command_parts[1].to_owned());
-                Server::trigger(ServerEvent::OpenFile(filename))?;
-            } else if command_parts[0] == "write" {
-                let filename: PathBuf = command_parts.get(1)
-                    .map(|s| PathBuf::from(s))
-                    .or_else(|| Server::get().state.path.clone())
-                    .unwrap();
-                Server::trigger(ServerEvent::WriteFile(filename))?;
-            } else if command_parts[0] == "close" {
-                Server::trigger(ServerEvent::CloseFile())?;
+            if command_parts.len() > 0 {
+                if command_parts[0] == "open" {
+                    let filename = PathBuf::from(command_parts[1].to_owned());
+                    Server::trigger(ServerEvent::OpenFile(filename))?;
+                } else if command_parts[0] == "write" {
+                    let filename: PathBuf = command_parts.get(1)
+                        .map(|s| PathBuf::from(s))
+                        .or_else(|| Server::get().state.path.clone())
+                        .unwrap();
+                    Server::trigger(ServerEvent::WriteFile(filename))?;
+                } else if command_parts[0] == "close" {
+                    Server::trigger(ServerEvent::CloseFile())?;
+                } else if command_parts[0] == "open" && command_parts.len() > 1 {
+                    let filename = PathBuf::from(command_parts[1].clone());
+                    Server::trigger(ServerEvent::WriteFile(filename))?;
+                }
             }
         },
     }

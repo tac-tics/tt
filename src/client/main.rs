@@ -107,15 +107,8 @@ fn main() {
     std::thread::spawn(move || resize_listener(resize_receiver));
 
     clear_screen(&mut stdout);
-    connection.send(ClientMessage::Connect).unwrap();
-
-    let args: Vec<String> = std::env::args().collect();
-    if let Some(filename) = args.get(1).cloned() {
-        let filename = std::fs::canonicalize(filename).unwrap().to_str().unwrap().to_string();
-        info!("Opening file: {filename:?}");
-        connection.send(ClientMessage::Open(filename)).unwrap();
-    }
-
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    connection.send(ClientMessage::Connect(args)).unwrap();
 
     'runloop: loop {
         let event = receiver.recv().unwrap();

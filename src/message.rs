@@ -7,9 +7,8 @@ pub type Size = (u16, u16);
 
 #[derive(Hash, PartialEq, Eq, Debug, Serialize, Deserialize, Clone)]
 pub enum ClientMessage {
-    Connect,
+    Connect(Vec<String>),
     RequestRefresh,
-    Open(String),
     SendInput(Key),
     Resize(Size),
     Disconnect,
