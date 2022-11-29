@@ -11,7 +11,7 @@ use std::time::Duration;
 use std::path::PathBuf;
 
 use tt::connection::{Connection, Listener};
-use tt::message::{ClientMessage, Size, Key};
+use tt::message::{ClientMessage, ServerMessage, Size, Key};
 
 pub mod render;
 
@@ -39,6 +39,7 @@ pub struct TermTextState {
     pub size: Size,
 }
 
+#[derive(Clone, PartialEq, Eq, Debug, Copy)]
 struct ConnectedClient {
     connection: Connection,
 }
@@ -78,15 +79,15 @@ impl Server {
     }
 
     fn connect_client(connection: Connection) {
-        let connection1 = connection.clone();
-        std::thread::Builder::new().name("client_message_thread".to_string()).spawn(|| {
-            client_message_received_thread(connection1).unwrap();
-        }).unwrap();
-
         let client = ConnectedClient {
             connection,
         };
+        let client1 = client.clone();
+        std::thread::Builder::new().name("client_message_thread".to_string()).spawn(move || {
+            client_message_received_thread(client1).unwrap();
+        }).unwrap();
         CLIENTS.lock().unwrap().push(client);
+
     }
 
     fn trigger(event: ServerEvent) -> anyhow::Result<()> {
@@ -94,8 +95,24 @@ impl Server {
         Ok(())
     }
 
-    fn clients<'a>() -> MutexGuard<'a, Vec<ConnectedClient>> {
-        CLIENTS.lock().unwrap()
+    fn broadcast(message: ServerMessage) -> anyhow::Result<()> {
+        for client in CLIENTS.lock().unwrap().iter_mut() {
+            client.connection.send(message.clone())?;
+        }
+        Ok(())
+    }
+
+    fn disconnect_client(client: ConnectedClient) {
+        let mut clients = CLIENTS.lock().unwrap();
+        let mut i = 0;
+        for cur_client in clients.iter() {
+            if *cur_client == client {
+                clients.swap_remove(i);
+                return;
+            }
+            i += 1;
+        }
+        panic!("Tried to remove client from server, but client not found.");
     }
 }
 
@@ -191,18 +208,18 @@ fn trap_signals() {
 
 #[derive(Debug)]
 enum ServerEvent {
-    ClientMessageReceived(ClientMessage),
+    ClientMessageReceived(ConnectedClient, ClientMessage),
     OpenFile(PathBuf),
     WriteFile(PathBuf),
     CloseFile(),
     IssueCommand(String),
 }
 
-fn client_message_received_thread(mut connection: Connection) -> anyhow::Result<()> {
+fn client_message_received_thread(mut client: ConnectedClient) -> anyhow::Result<()> {
     loop {
-        match connection.receive() {
+        match client.connection.receive() {
             Ok(Some(message)) => {
-                Server::trigger(ServerEvent::ClientMessageReceived(message)).unwrap();
+                Server::trigger(ServerEvent::ClientMessageReceived(client, message)).unwrap();
             },
             Ok(None) => (),
             Err(e) => {
@@ -216,18 +233,17 @@ fn client_message_received_thread(mut connection: Connection) -> anyhow::Result<
 }
 
 fn send_update() -> anyhow::Result<()> {
-    let connection = &mut Server::clients()[0].connection;
     info!("send_update()");
 
     for message in render::render(&Server::get().state) {
-        connection.send(message)?;
+        Server::broadcast(message)?;
     }
     Ok(())
 }
 
 fn handle_server_event(event: ServerEvent) -> anyhow::Result<()> {
     match event {
-        ServerEvent::ClientMessageReceived(message) => {
+        ServerEvent::ClientMessageReceived(client, message) => {
             info!("Received message: {message:?}");
             match message {
                 ClientMessage::Connect => {
@@ -244,9 +260,8 @@ fn handle_server_event(event: ServerEvent) -> anyhow::Result<()> {
                         state.mode = BufferMode::Normal;
                         state.command = None;
                     });
-                    for connection in Server::clients().iter_mut() {
-                        connection.connection.close()?;
-                    }
+
+                    Server::disconnect_client(client);
                 },
                 ClientMessage::SendInput(key) => {
                     handle_input(key)?;
