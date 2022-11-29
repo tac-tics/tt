@@ -56,7 +56,8 @@ pub fn render(state: &TermTextState) -> Vec<ServerMessage> {
     status_line.push_str(&format!("{:?}", state.mode));
     if let Some(command) = &state.command {
         status_line.push_str(&format!(" {}", command));
-    } else if let Some(path) = &state.path {
+    }
+    if let Some(path) = &state.path {
         status_line.push_str(&format!(" {path:?}"));
     }
     messages.push(ServerMessage::Update(status_pos, status_size, vec![status_line]));

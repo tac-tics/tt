@@ -261,6 +261,10 @@ fn handle_server_event(event: ServerEvent) -> anyhow::Result<()> {
         },
         ServerEvent::OpenFile(filepath) => {
             info!("Handling OpenFile({filepath:?})");
+            info!("Abspath: {:?}", filepath.canonicalize());
+            if !filepath.exists() {
+                std::fs::File::create(&filepath)?;
+            }
             let mut file = std::fs::File::open(&filepath)?;
             let mut data = String::new();
             file.read_to_string(&mut data)?;
@@ -297,17 +301,23 @@ fn handle_server_event(event: ServerEvent) -> anyhow::Result<()> {
                     let filename = PathBuf::from(command_parts[1].to_owned());
                     Server::trigger(ServerEvent::OpenFile(filename))?;
                 } else if command_parts[0] == "write" {
-                    let filename: PathBuf = command_parts.get(1)
-                        .map(|s| PathBuf::from(s))
-                        .or_else(|| Server::get().state.path.clone())
-                        .unwrap();
-                    Server::trigger(ServerEvent::WriteFile(filename))?;
+                    if command_parts.len() > 1 {
+                        let filepath = PathBuf::from(command_parts[1].clone());
+                        Server::get().state.path = Some(filepath);
+                    }
+                    let path = Server::get().state.path.clone();
+
+                    if let Some(filename) = path {
+                        Server::trigger(ServerEvent::WriteFile(filename.clone()))?;
+                    }
                 } else if command_parts[0] == "close" {
                     Server::trigger(ServerEvent::CloseFile())?;
                 } else if command_parts[0] == "open" && command_parts.len() > 1 {
                     let filename = PathBuf::from(command_parts[1].clone());
                     Server::trigger(ServerEvent::WriteFile(filename))?;
                 }
+            } else {
+                info!("No command matched");
             }
         },
     }
