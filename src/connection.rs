@@ -1,7 +1,8 @@
 use anyhow;
 use log::*;
 use std::os::unix::io::RawFd;
-use nix::sys::socket::{socket, bind, send, recv, accept, listen, connect};
+use nix::sys::socket::{socket, bind, send, recv, accept, listen, connect, shutdown};
+use nix::sys::socket::Shutdown;
 use nix::sys::socket::AddressFamily;
 use nix::sys::socket::SockType;
 use nix::sys::socket::SockFlag;
@@ -58,6 +59,11 @@ impl Connection {
         connect(fd, &addr).unwrap();
         debug!("Connected to {sock_path:?}");
         Ok(Connection(fd))
+    }
+
+    pub fn close(&mut self) -> anyhow::Result<()> {
+        shutdown(self.0, Shutdown::Both)?;
+        Ok(())
     }
 
     pub fn send<T: Serialize + Debug>(&mut self, message: T) -> std::io::Result<()> {

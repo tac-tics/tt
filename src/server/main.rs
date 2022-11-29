@@ -244,7 +244,9 @@ fn handle_server_event(event: ServerEvent) -> anyhow::Result<()> {
                         state.mode = BufferMode::Normal;
                         state.command = None;
                     });
-                    // Server::disconnect(
+                    for connection in Server::clients().iter_mut() {
+                        connection.connection.close()?;
+                    }
                 },
                 ClientMessage::SendInput(key) => {
                     handle_input(key)?;

@@ -125,6 +125,7 @@ fn main() {
                 if key == Key::Ctrl('c') {
                     info!("Detected C-c. Exiting.");
                     connection.send(ClientMessage::Disconnect).unwrap();
+                    connection.close().unwrap();
                     break 'runloop;
                 } else {
                     let message = ClientMessage::SendInput(key.into());
