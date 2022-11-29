@@ -8,11 +8,12 @@ use log::*;
 use lazy_static::lazy_static;
 use serde::{Serialize, Deserialize};
 use std::time::Duration;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::PathBuf;
 
 use tt::connection::{Connection, Listener};
-use tt::message::{ClientMessage, ServerMessage, Size, Key};
+use tt::message::{ClientMessage, Size, Key};
+
+pub mod render;
 
 const IPC_DIR: &'static str = "/home/tac-tics/projects/tt/ipc";
 
@@ -67,11 +68,7 @@ impl Server {
     }
 
     fn get<'a>() -> ServerMutexGuard<'a> {
-        let bt = backtrace::Backtrace::new();
-        let thread = std::thread::current();
-        let thread_name = thread.name().unwrap();
-        let guard = ServerMutexGuard(SERVER.lock().unwrap());
-        guard
+        ServerMutexGuard(SERVER.lock().unwrap())
     }
 
     fn with_state<F, R>(update: F) -> R
@@ -81,10 +78,9 @@ impl Server {
     }
 
     fn connect_client(connection: Connection) {
-        let mut server = Server::get();
         let connection1 = connection.clone();
         std::thread::Builder::new().name("client_message_thread".to_string()).spawn(|| {
-            client_message_received_thread(connection1);
+            client_message_received_thread(connection1).unwrap();
         }).unwrap();
 
         let client = ConnectedClient {
@@ -220,152 +216,102 @@ fn client_message_received_thread(mut connection: Connection) -> anyhow::Result<
 }
 
 fn send_update() -> anyhow::Result<()> {
-    let size = Server::get().state.size;
-
     let connection = &mut Server::clients()[0].connection;
-
     info!("send_update()");
-    let pos = (0, 0);
-    let mut cursor_pos = pos;
 
-    let mut lines = Vec::new();
-
-    let data = Server::get().state.data.clone();
-    let show_line_numbers = true;
-
-    let mut line = if show_line_numbers {
-        "     1 | ".to_string()
-    } else {
-         String::new()
-    };
-
-    for ch in data.chars() {
-        if ch == '\n' {
-            lines.push(line);
-            line = if show_line_numbers {
-                format!("{:6} | ", cursor_pos.1 + 2)
-            } else {
-                 String::new()
-            };
-            cursor_pos.0 = 0;
-            cursor_pos.1 += 1;
-        } else if ch == '\t' {
-            line.push_str("    ");
-            cursor_pos.0 += 4;
-        } else {
-            line.push(ch);
-            cursor_pos.0 += 1;
-        }
+    for message in render::render(&Server::get().state) {
+        connection.send(message)?;
     }
+    Ok(())
+}
 
-    lines.push(line);
+fn handle_server_event(event: ServerEvent) -> anyhow::Result<()> {
+    match event {
+        ServerEvent::ClientMessageReceived(message) => {
+            info!("Received message: {message:?}");
+            match message {
+                ClientMessage::Connect => {
+                    send_update()?;
+                },
+                ClientMessage::RequestRefresh => {
+                    send_update()?;
+                },
+                ClientMessage::Open(filename) => {
+                    Server::trigger(ServerEvent::OpenFile(PathBuf::from(filename)))?;
+                },
+                ClientMessage::Disconnect => {
+                    Server::with_state(|state| {
+                        state.mode = BufferMode::Normal;
+                        state.command = None;
+                    });
+                    // Server::disconnect(
+                },
+                ClientMessage::SendInput(key) => {
+                    handle_input(key)?;
+                    send_update()?;
+                },
+                ClientMessage::Resize(size) => {
+                    Server::with_state(|state| {
+                        state.size = size;
+                    });
+                    send_update()?;
+                },
+            }
+        },
+        ServerEvent::OpenFile(filepath) => {
+            info!("Handling OpenFile({filepath:?})");
+            let mut file = std::fs::File::open(&filepath)?;
+            let mut data = String::new();
+            file.read_to_string(&mut data)?;
+            Server::with_state(|state| {
+                state.data = data;
+                state.path = Some(filepath.clone());
+            });
+            send_update()?;
+        },
+        ServerEvent::WriteFile(filepath) => {
+            info!("Handling WriteFile({filepath:?})");
+            let mut file = std::fs::File::options()
+                .write(true)
+                .truncate(true)
+                .open(filepath)?;
 
-    connection.send(ServerMessage::Update(pos, size, lines))?;
-
-    let status_pos = if size.1 > 0 {
-        (0, size.1 - 1 as u16)
-    } else {
-        (0, 0)
-    };
-    let status_size = (size.0, 1);
-    let mut status_line = "tt: ".to_string();
-    Server::with_state(|state| {
-        status_line.push_str(&format!("{:?}", state.mode));
-        if let Some(command) = &state.command {
-            status_line.push_str(&format!(" {}", command));
-        } else if let Some(path) = &state.path {
-            status_line.push_str(&format!(" {path:?}"));
-        }
-    });
-    connection.send(ServerMessage::Update(status_pos, status_size, vec![status_line]))?;
-
-    if show_line_numbers {
-        cursor_pos.0 += 9;
+            let data: String = Server::get().state.data.clone();
+            file.write_all(&data.as_bytes())?;
+        },
+        ServerEvent::CloseFile() => {
+            info!("Handling CloseFile()");
+            Server::with_state(|state| {
+                state.path = None;
+                state.data = String::new();
+            });
+            send_update()?;
+        },
+        ServerEvent::IssueCommand(command) => {
+            info!("COMMAND: {command:?}");
+            let command_parts: Vec<String> = command.split(' ').map(|s| s.to_owned()).collect();
+            if command_parts[0] == "open" {
+                let filename = PathBuf::from(command_parts[1].to_owned());
+                Server::trigger(ServerEvent::OpenFile(filename))?;
+            } else if command_parts[0] == "write" {
+                let filename: PathBuf = command_parts.get(1)
+                    .map(|s| PathBuf::from(s))
+                    .or_else(|| Server::get().state.path.clone())
+                    .unwrap();
+                Server::trigger(ServerEvent::WriteFile(filename))?;
+            } else if command_parts[0] == "close" {
+                Server::trigger(ServerEvent::CloseFile())?;
+            }
+        },
     }
-    connection.send(ServerMessage::Cursor(cursor_pos))?;
     Ok(())
 }
 
 fn server_event_loop_thread(event_receiver: mpsc::Receiver<ServerEvent>) -> anyhow::Result<()> {
     loop {
         let event = event_receiver.recv()?;
-        match event {
-            ServerEvent::ClientMessageReceived(message) => {
-                info!("Received message: {message:?}");
-                match message {
-                    ClientMessage::Connect => {
-                        send_update()?;
-                    },
-                    ClientMessage::RequestRefresh => {
-                        send_update()?;
-                    },
-                    ClientMessage::Open(filename) => {
-                        Server::trigger(ServerEvent::OpenFile(PathBuf::from(filename)))?;
-                    },
-                    ClientMessage::Disconnect => {
-                        Server::with_state(|state| {
-                            state.mode = BufferMode::Normal;
-                            state.command = None;
-                        });
-                        // Server::disconnect(
-                    },
-                    ClientMessage::SendInput(key) => {
-                        handle_input(key)?;
-                        send_update()?;
-                    },
-                    ClientMessage::Resize(size) => {
-                        Server::with_state(|state| {
-                            state.size = size;
-                        });
-                        send_update()?;
-                    },
-                }
-            },
-            ServerEvent::OpenFile(filepath) => {
-                info!("Handling OpenFile({filepath:?})");
-                let mut file = std::fs::File::open(&filepath)?;
-                let mut data = String::new();
-                file.read_to_string(&mut data)?;
-                Server::with_state(|state| {
-                    state.data = data;
-                    state.path = Some(filepath.clone());
-                });
-                send_update()?;
-            },
-            ServerEvent::WriteFile(filepath) => {
-                info!("Handling WriteFile({filepath:?})");
-                let mut file = std::fs::File::options()
-                    .write(true)
-                    .truncate(true)
-                    .open(filepath)?;
-
-                let data: String = Server::get().state.data.clone();
-                file.write_all(&data.as_bytes())?;
-            },
-            ServerEvent::CloseFile() => {
-                info!("Handling CloseFile()");
-                Server::with_state(|state| {
-                    state.path = None;
-                    state.data = String::new();
-                });
-                send_update()?;
-            },
-            ServerEvent::IssueCommand(command) => {
-                info!("COMMAND: {command:?}");
-                let command_parts: Vec<String> = command.split(' ').map(|s| s.to_owned()).collect();
-                if command_parts[0] == "open" {
-                    let filename = PathBuf::from(command_parts[1].to_owned());
-                    Server::trigger(ServerEvent::OpenFile(filename))?;
-                } else if command_parts[0] == "write" {
-                    let filename: PathBuf = command_parts.get(1)
-                        .map(|s| PathBuf::from(s))
-                        .or_else(|| Server::get().state.path.clone())
-                        .unwrap();
-                    Server::trigger(ServerEvent::WriteFile(filename))?;
-                } else if command_parts[0] == "close" {
-                    Server::trigger(ServerEvent::CloseFile())?;
-                }
-            },
+        if let Err(e) = handle_server_event(event) {
+            error!("{e:?}");
         }
     }
 }

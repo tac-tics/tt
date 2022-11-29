@@ -95,7 +95,7 @@ impl Connection {
          while total_read < 8 {
             let read = recv(fd, &mut size_buf[total_read..], flags)?;
             if read == 0 {
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Connection closed"));
+                return Ok(None);
             }
             total_read += read;
         }
@@ -107,7 +107,7 @@ impl Connection {
         while total_read < json_data_len {
             let read = recv(fd, &mut message_buf[total_read..], flags)?;
             if read == 0 {
-                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Connection closed"));
+                return Ok(None);
             }
             total_read += read;
         }
