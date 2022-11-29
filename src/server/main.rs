@@ -68,8 +68,8 @@ impl Server {
         Server::get().event_receiver.take().unwrap()
     }
 
-    fn get<'a>() -> ServerMutexGuard<'a> {
-        ServerMutexGuard(SERVER.lock().unwrap())
+    fn get<'a>() -> MutexGuard<'a, Self> {
+        SERVER.lock().unwrap()
     }
 
     fn with_state<F, R>(update: F) -> R
@@ -113,23 +113,6 @@ impl Server {
             i += 1;
         }
         panic!("Tried to remove client from server, but client not found.");
-    }
-}
-
-struct ServerMutexGuard<'a>(MutexGuard<'a, Server>);
-impl<'a> std::ops::Deref for ServerMutexGuard<'a> {
-    type Target = MutexGuard<'a, Server>;
-    fn deref(&self) -> &MutexGuard<'a, Server> {
-        &self.0
-    }
-}
-impl<'a> std::ops::DerefMut for ServerMutexGuard<'a> {
-    fn deref_mut(&mut self) -> &mut MutexGuard<'a, Server> {
-        &mut self.0
-    }
-}
-impl<'a> Drop for ServerMutexGuard<'a> {
-    fn drop(&mut self) {
     }
 }
 
