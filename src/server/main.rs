@@ -8,10 +8,10 @@ use log::*;
 use lazy_static::lazy_static;
 use serde::{Serialize, Deserialize};
 use std::time::Duration;
-use std::path::PathBuf;
+use std::path::{PathBuf, Path};
 
 use tt::connection::{Connection, Listener};
-use tt::message::{ClientMessage, ServerMessage, Size, Key};
+use tt::message::{ClientMessage, ServerMessage, Size, Key, Position};
 
 pub mod render;
 
@@ -30,13 +30,81 @@ impl Default for BufferMode {
     }
 }
 
+
+#[derive(Default, Serialize, Deserialize)]
+pub struct Buffer {
+    pub path: Option<PathBuf>,
+    pub data: String,
+    pub pos: Position,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct TermTextState {
-    pub path: Option<PathBuf>,
-    pub command: Option<String>,
-    pub data: String,
     pub mode: BufferMode,
+    pub buffers: Vec<Buffer>,
+    pub command: Option<String>,
     pub size: Size,
+}
+
+impl TermTextState {
+    pub fn create_buffer(&mut self, path: &Path) -> &mut Buffer {
+        if self.buffer_exists_by_path(path) {
+            return self.buffer_by_path(path).unwrap();
+        }
+
+        let buffer = Buffer {
+            path: Some(path.to_path_buf()),
+            pos: (0, 0),
+            data: "".to_string(),
+        };
+        self.buffers.push(buffer);
+        &mut self.buffers[0]
+    }
+
+    pub fn buffer_exists_by_path(&mut self, path: &Path) -> bool {
+        let pathbuf = path.to_path_buf();
+        for buffer in self.buffers.iter_mut() {
+            if buffer.path.as_ref() == Some(&pathbuf) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn buffer_by_path(&mut self, path: &Path) -> Option<&mut Buffer> {
+        let pathbuf = path.to_path_buf();
+        for buffer in self.buffers.iter_mut() {
+            if buffer.path.as_ref() == Some(&pathbuf) {
+                return Some(buffer);
+            }
+        }
+        None
+    }
+
+    pub fn close_current_buffer(&mut self) -> bool {
+        if self.buffers.len() > 0 {
+            self.buffers.remove(0);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn current_buffer(&self) -> Option<&Buffer> {
+        if self.buffers.len() > 0 {
+            Some(&self.buffers[0])
+        } else {
+            None
+        }
+    }
+
+    pub fn current_buffer_mut(&mut self) -> Option<&mut Buffer> {
+        if self.buffers.len() > 0 {
+            Some(&mut self.buffers[0])
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug, Copy)]
@@ -158,7 +226,7 @@ fn main() {
 
 fn setup_logging() {
     WriteLogger::init(
-        LevelFilter::Warn,
+        LevelFilter::Info,
         Config::default(),
         std::fs::File::create(format!("{IPC_DIR}/tt-daemon.log")).unwrap(),
     ).unwrap();
@@ -261,7 +329,8 @@ fn handle_server_event(event: ServerEvent) -> anyhow::Result<()> {
         },
         ServerEvent::OpenFile(filepath) => {
             info!("Handling OpenFile({filepath:?})");
-            info!("Abspath: {:?}", filepath.canonicalize());
+            let abs_filepath = filepath.canonicalize()?;
+            info!("Abspath: {:?}", abs_filepath);
             if !filepath.exists() {
                 std::fs::File::create(&filepath)?;
             }
@@ -269,8 +338,12 @@ fn handle_server_event(event: ServerEvent) -> anyhow::Result<()> {
             let mut data = String::new();
             file.read_to_string(&mut data)?;
             Server::with_state(|state| {
-                state.data = data;
-                state.path = Some(filepath.clone());
+                if let Some(buffer) = state.buffer_by_path(&abs_filepath) {
+                    buffer.data = data;
+                } else {
+                    state.create_buffer(&abs_filepath);
+                }
+
             });
             send_update()?;
         },
@@ -282,14 +355,18 @@ fn handle_server_event(event: ServerEvent) -> anyhow::Result<()> {
                 .create(true)
                 .open(filepath)?;
 
-            let data: String = Server::get().state.data.clone();
-            file.write_all(&data.as_bytes())?;
+            let state = &mut Server::get().state;
+            if let Some(buffer) = &mut state.current_buffer_mut() {
+                let data = buffer.data.clone();
+                file.write_all(&data.as_bytes())?;
+            } else {
+                error!("No buffer to write");
+            }
         },
         ServerEvent::CloseFile() => {
             info!("Handling CloseFile()");
             Server::with_state(|state| {
-                state.path = None;
-                state.data = String::new();
+                state.close_current_buffer();
             });
             send_update()?;
         },
@@ -303,12 +380,19 @@ fn handle_server_event(event: ServerEvent) -> anyhow::Result<()> {
                 } else if command_parts[0] == "write" {
                     if command_parts.len() > 1 {
                         let filepath = PathBuf::from(command_parts[1].clone());
-                        Server::get().state.path = Some(filepath);
-                    }
-                    let path = Server::get().state.path.clone();
+                        let state = &mut Server::get().state;
 
-                    if let Some(filename) = path {
-                        Server::trigger(ServerEvent::WriteFile(filename.clone()))?;
+                        if let Some(buffer) = state.current_buffer_mut() {
+                            buffer.path = Some(filepath);
+                        }
+                    }
+                    let state = &mut Server::get().state;
+                    if let Some(buffer) = state.current_buffer_mut() {
+                        let path = buffer.path.clone();
+
+                        if let Some(filename) = path {
+                            Server::trigger(ServerEvent::WriteFile(filename.clone()))?;
+                        }
                     }
                 } else if command_parts[0] == "close" {
                     Server::trigger(ServerEvent::CloseFile())?;
@@ -356,12 +440,20 @@ fn handle_input(key: Key) -> anyhow::Result<()> {
         },
         (BufferMode::Insert, Key::Backspace) => {
             Server::with_state(|state| {
-                state.data.pop();
+                if let Some(buffer) = state.current_buffer_mut() {
+                    buffer.data.pop();
+                } else {
+                    error!("No current buffer");
+                }
             });
         },
         (BufferMode::Insert, Key::Char(c)) => {
             Server::with_state(|state| {
-                state.data.push(c);
+                if let Some(buffer) = state.current_buffer_mut() {
+                    buffer.data.push(c);
+                } else {
+                    error!("No current buffer");
+                }
             });
         },
         (BufferMode::Command, Key::Char(c)) => {
